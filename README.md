@@ -1,39 +1,60 @@
-🐾 Xiaomi (小咪) WeChat Data Analyst Bot
+# Xiaomi WeChat Data Analyst Bot
 
-A fully automated WeChat group chat assistant built with Wechaty and AI.
+A local WeChat group assistant built with Wechaty, DeepSeek, and APIMart. It keeps recent room messages in memory, summarizes them with DeepSeek, generates a poster with APIMart, and sends the poster back to the group when triggered.
 
-When triggered, this bot reads the group's message history, acts as a "Catgirl Data Analyst", and uses DeepSeek + APIMart (gpt-image-2) to generate a beautiful, personalized, and visually stunning data dashboard poster directly in the chat!
+## Features
 
-✨ Features
+- Keeps message history in RAM and drops messages older than 24 hours.
+- Tracks each room by `roomId`, so multiple groups do not share memory.
+- Supports text, image, link, emoticon, video, audio, attachment, and mini program message counts.
+- Generates a structured JSON analysis first, then turns it into an image prompt.
+- Preserves messages that arrive while a poster is being generated, so they can be included in the next summary.
 
-Zero-Database Memory: Memorizes chat history in RAM, automatically wiping messages older than 24 hours to stay lightweight.
+## Requirements
 
-Smart Data Extraction: Uses DeepSeek to structure chaotic chat logs into clean JSON data (counting messages, images, links, active users, and hot topics).
+- macOS
+- Node.js 18 or newer
+- A DeepSeek API key
+- An APIMart API key
+- A WeChat account that can log in through the configured Wechaty puppet
 
-AI Poster Generation: Feeds the structured JSON into an image generator to draw a pastel kawaii dashboard summarizing the group's activity.
+## Local Setup
 
-Multi-Group Support: Safely isolates memories using unique roomId tracking, allowing the bot to manage multiple groups simultaneously.
-
-🚀 How to Run
-
-Clone this repository to your local machine.
-
-Install dependencies:
-
+```bash
 npm install
+cp .env.example .env
+```
 
+Edit `.env` and fill in:
 
-Open bot-exporter.js and add your DeepSeek API Key and APIMart API Key at the top.
+```bash
+DEEPSEEK_API_KEY=your_deepseek_api_key_here
+APIMART_API_KEY=your_apimart_api_key_here
+```
 
-Run the bot:
+Optional settings are also documented in `.env.example`, including the trigger word and APIMart polling limits.
 
-node bot-exporter.js
+## Run
 
+```bash
+npm start
+```
 
-Scan the QR code with your WeChat app to log in.
+Scan the QR code printed in the terminal with WeChat. In a group chat, send the trigger word configured by `WECHAT_SUMMARY_TRIGGER`; the default is:
 
-In any group chat, type your choice of code to trigger the AI summary!
+```text
+#到点了兄弟
+```
 
-⚠️ Disclaimer
+## Verify
 
-Please remember to respect privacy when using chat history bots. Do not upload your personal API keys to public repositories.
+```bash
+npm run check
+```
+
+This runs syntax checks and the Node test suite.
+
+## Notes
+
+- API keys are loaded from environment variables or `.env`; do not commit real keys.
+- `wechaty-puppet-wechat4u` can be sensitive to WeChat account state and WeChat Web availability. If login fails, first verify the account can use the Web WeChat flow required by the puppet.

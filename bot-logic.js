@@ -1,16 +1,23 @@
 import { WechatyBuilder } from 'wechaty';
 import { FileBox } from 'file-box';
 import OpenAI from 'openai';
+import { getBotConfig, loadDotEnv } from './bot-config.js';
+
+loadDotEnv();
+
+let config;
+try {
+    config = getBotConfig();
+} catch (error) {
+    console.error(`❌ ${error.message}`);
+    process.exit(1);
+}
 
 // 1. DeepSeek Client (For Text Summaries)
 const deepseek = new OpenAI({
-    baseURL: 'https://api.deepseek.com',
-    apiKey: 'YOUR_DEEPSEEK_API_KEY' // Replace with your DeepSeek API Key
+    baseURL: config.deepseekBaseUrl,
+    apiKey: config.deepseekApiKey
 });
-
-// 2. APIMart Configuration (For gpt-image-2 Poster Generation)
-const APIMART_BASE_URL = 'https://api.apimart.ai'; 
-const APIMART_API_KEY = 'YOUR_APIMART_API_KEY' // Replace with your APIMart API Key
 
 // The bot's internal memory! It will store messages here.
 const roomMessageHistory = new Map();
@@ -19,8 +26,8 @@ const lastTriggerTimes = new Map();
 console.log('🚀 Initializing Wechaty...');
 
 const wechaty = WechatyBuilder.build({
-    name: 'xiaomi-bot',
-    puppet: 'wechaty-puppet-wechat4u' 
+    name: config.wechatyName,
+    puppet: config.wechatyPuppet
 });
 
 wechaty.on('scan', (qrcode, status) => {
@@ -43,7 +50,7 @@ wechaty.on('message', async (message) => {
         const now = Date.now();
 
         // Check if the message is our secret trigger word
-        if (text === '#到点了兄弟') {
+        if (text === config.triggerWord) {
             console.log(`Export command detected in room: ${topic} by ${talker.name()}`);
 
             let sinceTimestamp = now - 24 * 60 * 60 * 1000; // Default: 24 hours ago
@@ -56,11 +63,11 @@ wechaty.on('message', async (message) => {
                 }
             }
 
-            // Update the trigger time using roomId
-            lastTriggerTimes.set(roomId, now);
-
             // Run the summary! Notice we are passing roomId now too.
-            exportRoomHistory(topic, roomId, room, sinceTimestamp);
+            const exportSucceeded = await exportRoomHistory(topic, roomId, room, sinceTimestamp, now);
+            if (exportSucceeded) {
+                lastTriggerTimes.set(roomId, now);
+            }
             return; // Stop here so the trigger word itself isn't saved in history
         }
 
@@ -123,16 +130,18 @@ wechaty.on('message', async (message) => {
 });
 
 // 👇 ADAPTED: Add roomId to the function parameters
-async function exportRoomHistory(roomTopic, roomId, room, sinceTimestamp) {
+async function exportRoomHistory(roomTopic, roomId, room, sinceTimestamp, summaryUntilTimestamp) {
     await room.say('喵~ 收到！喵小助正在进行结构化数据分析并绘制海报，可能需要一分多钟，不要走开喵~ 🎨🐾');
 
     try {
         // 👇 ADAPTED: Grab messages from the bot's memory using the unique ID
         const allMessages = roomMessageHistory.get(roomId) || [];
-        const recentMessages = allMessages.filter(msg => msg.time >= sinceTimestamp);
+        const recentMessages = allMessages.filter(
+            msg => msg.time >= sinceTimestamp && msg.time <= summaryUntilTimestamp
+        );
 
         if (recentMessages.length > 0) {
-            let formattedChatLog = recentMessages.map(msg => {
+            const formattedChatLog = recentMessages.map(msg => {
                 const date = new Date(msg.time);
                 const timeString = `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`;
                 return `[${timeString}] ${msg.sender}: ${msg.content}`;
@@ -259,10 +268,10 @@ ${analysisJsonText}
             // ==========================================
             console.log('🎨 STEP 3: Submitting exact Prompt to APIMart (gpt-image-2)...');
             
-            const submitResponse = await fetch(`${APIMART_BASE_URL}/v1/images/generations`, {
+            const submitResponse = await fetch(`${config.apimartBaseUrl}/v1/images/generations`, {
                 method: 'POST',
                 headers: {
-                    'Authorization': `Bearer ${APIMART_API_KEY}`,
+                    'Authorization': `Bearer ${config.apimartApiKey}`,
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
@@ -276,6 +285,10 @@ ${analysisJsonText}
 
             const submitData = await submitResponse.json();
             
+            if (!submitResponse.ok) {
+                throw new Error(`APIMart submit request failed with HTTP ${submitResponse.status}: ${JSON.stringify(submitData)}`);
+            }
+
             if (submitData.code !== 200 || !submitData.data || !submitData.data[0].task_id) {
                 throw new Error('Failed to submit image task: ' + JSON.stringify(submitData));
             }
@@ -284,11 +297,11 @@ ${analysisJsonText}
             console.log(`⏳ Image task submitted (ID: ${taskId}). Waiting for APIMart to finish drawing...`);
 
             let imageUrl = null;
-            while (!imageUrl) {
-                await new Promise(resolve => setTimeout(resolve, 5000)); 
+            for (let attempt = 0; attempt < config.apimartMaxPollAttempts && !imageUrl; attempt += 1) {
+                await new Promise(resolve => setTimeout(resolve, config.apimartPollIntervalMs)); 
                 
-                const taskResponse = await fetch(`${APIMART_BASE_URL}/v1/tasks/${taskId}`, {
-                    headers: { 'Authorization': `Bearer ${APIMART_API_KEY}` }
+                const taskResponse = await fetch(`${config.apimartBaseUrl}/v1/tasks/${taskId}`, {
+                    headers: { 'Authorization': `Bearer ${config.apimartApiKey}` }
                 });
                 
                 const taskData = await taskResponse.json();
@@ -307,10 +320,18 @@ ${analysisJsonText}
                     console.log('... Checking status failed, retrying in 5s ...');
                 }
             }
+
+            if (!imageUrl) {
+                throw new Error(`APIMart image generation timed out after ${config.apimartMaxPollAttempts} attempts.`);
+            }
             
             console.log('✅ Poster generated! Downloading image to send to WeChat...');
             
             const imageResponse = await fetch(imageUrl);
+            if (!imageResponse.ok) {
+                throw new Error(`Generated image download failed with HTTP ${imageResponse.status}.`);
+            }
+
             const arrayBuffer = await imageResponse.arrayBuffer();
             const buffer = Buffer.from(arrayBuffer);
             
@@ -319,15 +340,21 @@ ${analysisJsonText}
             await room.say(fileBox);
 
             // 👇 ADAPTED: Clear the memory for this specific room ID after a successful summary
-            roomMessageHistory.set(roomId, []);
+            const currentMessages = roomMessageHistory.get(roomId) || [];
+            roomMessageHistory.set(
+                roomId,
+                currentMessages.filter(msg => msg.time > summaryUntilTimestamp)
+            );
 
         } else {
             await room.say("小咪看过了，这期间群里静悄悄的，一条新消息都没有喵！💤");
         }
 
+        return true;
     } catch (error) {
         console.error("❌ Failed to run AI or write the file.", error);
         await room.say("呜呜呜...小咪的系统好像卡住了，没能生成成功喵... 😿");
+        return false;
     }
 }
 
